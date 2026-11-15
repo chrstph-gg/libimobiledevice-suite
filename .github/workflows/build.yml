@@ -2,7 +2,7 @@ name: build
 
 on:
   schedule:
-    - cron: '17 3 * * 0'   # jeden Sonntag 03:17 UTC
+    - cron: '17 3 * * 0'   # every Sunday 03:17 UTC
   workflow_dispatch:
 
 permissions:
@@ -18,10 +18,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up MSYS2
+      - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
             git
@@ -31,26 +31,27 @@ jobs:
             automake-wrapper
             make
             zip
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-curl
-            mingw-w64-x86_64-libzip
-            mingw-w64-x86_64-libxml2
-            mingw-w64-x86_64-readline
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-libzip
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-readline
 
-      - name: Build OpenSSL with SSLv3 support (für iPhone OS 1.x)
+      - name: Build OpenSSL with SSLv3 support (iPhone OS 1.x)
         run: |
           pushd 3rd_party/mingw-w64-openssl > /dev/null
           gpg --recv-keys B146647E45A7B33947AB226B2A2C87D161692D40
           sed -i 's/\r$//' PKGBUILD
-          # Ersetzt das Standard-OpenSSL von MSYS2 durch die Variante mit SSLv3
+          # Replaces the stock MSYS2 OpenSSL with the SSLv3-enabled build
           makepkg-mingw -sfi --noconfirm --noprogressbar --nocheck
           popd > /dev/null
 
       - name: Build libimobiledevice suite
         run: |
-          # Reihenfolge ist wichtig: Abhängigkeiten zuerst
+          # Order matters: dependencies first
           repos=(libplist libimobiledevice-glue libusbmuxd libtatsu libimobiledevice
                  libideviceactivation ideviceinstaller libirecovery idevicerestore)
           : > versions.txt
@@ -59,7 +60,7 @@ jobs:
             git clone --depth=1 --recursive "https://github.com/libimobiledevice/$repo"
             pushd "$repo" > /dev/null
             echo "$repo $(git rev-parse --short HEAD) ($(git log -1 --format=%cs))" >> ../versions.txt
-            ./autogen.sh --prefix=/mingw64 --without-cython
+            ./autogen.sh --prefix="$MINGW_PREFIX" --without-cython
             make -j"$(nproc)"
             make install
             popd > /dev/null
@@ -70,13 +71,13 @@ jobs:
       - name: Collect binaries and DLLs
         run: |
           mkdir -p rel
-          find /mingw64/bin/ -type f \( -name '*idevice*' -o -name '*irecovery*' -o \
+          find "$MINGW_PREFIX/bin/" -type f \( -name '*idevice*' -o -name '*irecovery*' -o \
                                         -name 'afcclient.exe' -o -name 'plistutil.exe' -o \
                                         -name 'iproxy.exe' -o -name 'inetcat.exe' \) \
                -exec cp -v {} rel \;
-          # Alle benötigten DLLs rekursiv einsammeln statt sie von Hand aufzulisten
+          # Collect all required DLLs recursively instead of listing them by hand
           resolve_deps() {
-            ldd "$1" 2>/dev/null | awk '/\/mingw64\/bin\// {print $3}' | while read -r dll; do
+            ldd "$1" 2>/dev/null | awk -v p="$MINGW_PREFIX/bin/" 'index($3, p) == 1 {print $3}' | while read -r dll; do
               base=$(basename "$dll")
               if [ ! -f "rel/$base" ]; then
                 cp -v "$dll" rel/
@@ -85,6 +86,15 @@ jobs:
             done
           }
           for f in rel/*.exe; do resolve_deps "$f"; done
+
+      - name: Strip debug info
+        run: |
+          du -sh rel
+          strip --strip-unneeded rel/*.exe rel/*.dll
+          du -sh rel
+
+      - name: Package
+        run: |
           cp versions.txt rel/
           cd rel && zip -r ../libimobile-suite-latest_w64.zip .
 
