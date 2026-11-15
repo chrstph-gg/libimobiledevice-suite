@@ -39,6 +39,15 @@ jobs:
             mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-readline
 
+      - name: Build OpenSSL with SSLv3 support (für iPhone OS 1.x)
+        run: |
+          pushd 3rd_party/mingw-w64-openssl > /dev/null
+          gpg --recv-keys B146647E45A7B33947AB226B2A2C87D161692D40
+          sed -i 's/\r$//' PKGBUILD
+          # Ersetzt das Standard-OpenSSL von MSYS2 durch die Variante mit SSLv3
+          makepkg-mingw -sfi --noconfirm --noprogressbar --nocheck
+          popd > /dev/null
+
       - name: Build libimobiledevice suite
         run: |
           # Reihenfolge ist wichtig: Abhängigkeiten zuerst
