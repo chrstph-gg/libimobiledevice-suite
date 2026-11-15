@@ -1,0 +1,91 @@
+name: build
+
+on:
+  schedule:
+    - cron: '17 3 * * 0'   # jeden Sonntag 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            base-devel
+            libtool
+            autoconf
+            automake-wrapper
+            make
+            zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-libzip
+            mingw-w64-x86_64-libxml2
+            mingw-w64-x86_64-readline
+
+      - name: Build libimobiledevice suite
+        run: |
+          # Reihenfolge ist wichtig: Abhängigkeiten zuerst
+          repos=(libplist libimobiledevice-glue libusbmuxd libtatsu libimobiledevice
+                 libideviceactivation ideviceinstaller libirecovery idevicerestore)
+          : > versions.txt
+          for repo in "${repos[@]}"; do
+            echo "::group::Building $repo"
+            git clone --depth=1 --recursive "https://github.com/libimobiledevice/$repo"
+            pushd "$repo" > /dev/null
+            echo "$repo $(git rev-parse --short HEAD) ($(git log -1 --format=%cs))" >> ../versions.txt
+            ./autogen.sh --prefix=/mingw64 --without-cython
+            make -j"$(nproc)"
+            make install
+            popd > /dev/null
+            echo "::endgroup::"
+          done
+          cat versions.txt
+
+      - name: Collect binaries and DLLs
+        run: |
+          mkdir -p rel
+          find /mingw64/bin/ -type f \( -name '*idevice*' -o -name '*irecovery*' -o \
+                                        -name 'afcclient.exe' -o -name 'plistutil.exe' -o \
+                                        -name 'iproxy.exe' -o -name 'inetcat.exe' \) \
+               -exec cp -v {} rel \;
+          # Alle benötigten DLLs rekursiv einsammeln statt sie von Hand aufzulisten
+          resolve_deps() {
+            ldd "$1" 2>/dev/null | awk '/\/mingw64\/bin\// {print $3}' | while read -r dll; do
+              base=$(basename "$dll")
+              if [ ! -f "rel/$base" ]; then
+                cp -v "$dll" rel/
+                resolve_deps "$dll"
+              fi
+            done
+          }
+          for f in rel/*.exe; do resolve_deps "$f"; done
+          cp versions.txt rel/
+          cd rel && zip -r ../libimobile-suite-latest_w64.zip .
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(date +'%Y%m%d')"
+          gh release create "$TAG" libimobile-suite-latest_w64.zip \
+            --title "libimobiledevice suite $TAG" \
+            --notes-file versions.txt \
+            --latest
